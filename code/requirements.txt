@@ -1,9 +1,10 @@
-numpy==1.26.4
-pandas==2.2.2
-scikit-learn==1.5.1
-matplotlib==3.9.2
-gdown==5.2.0
-torch==2.4.1
-transformers==4.44.2
-sentencepiece==0.2.0
-protobuf==5.28.2
+# Tested on Google Colab (Python 3.12, CUDA). Lower bounds; Colab preinstalls most of these.
+numpy>=1.26
+pandas>=2.2
+scikit-learn>=1.5
+matplotlib>=3.8
+gdown>=5.2
+torch>=2.4
+transformers>=4.44
+sentencepiece>=0.2
+protobuf>=4.25
