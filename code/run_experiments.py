@@ -190,7 +190,8 @@ def run_transformer(df, res_dir, model_name, max_len, epochs, bs, lr, fp16=False
     print(f"Device: {dev}" + (f" ({torch.cuda.get_device_name(0)})" if dev == "cuda" else " -- WARNING: no GPU, this will be very slow"))
     amp = fp16 and dev == "cuda"  # DeBERTa-v3 can overflow to NaN in fp16; default is fp32
     tok = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=1).to(dev)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=1)
+    model = model.float().to(dev)  # recent transformers may load fp16 weights; train in fp32
 
     class DS(Dataset):
         def __init__(self, d):
