@@ -180,13 +180,15 @@ def run_features(df, res_dir):
 
 
 # -------------------------------------------------------------------- transformer
-def run_transformer(df, res_dir, model_name, max_len, epochs, bs, lr):
+def run_transformer(df, res_dir, model_name, max_len, epochs, bs, lr, fp16=False):
     import torch
     from torch.utils.data import DataLoader, Dataset
     from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
 
     torch.manual_seed(SEED)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {dev}" + (f" ({torch.cuda.get_device_name(0)})" if dev == "cuda" else " -- WARNING: no GPU, this will be very slow"))
+    amp = fp16 and dev == "cuda"  # DeBERTa-v3 can overflow to NaN in fp16; default is fp32
     tok = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=1).to(dev)
 
@@ -209,14 +211,14 @@ def run_transformer(df, res_dir, model_name, max_len, epochs, bs, lr):
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     steps = epochs * len(dl_tr)
     sch = get_linear_schedule_with_warmup(opt, int(0.1 * steps), steps)
-    scaler = torch.amp.GradScaler(enabled=dev == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)
 
     def predict(d):
         model.eval(); out = []
         with torch.no_grad():
             for b in dl(d):
                 b = {k: v.to(dev) for k, v in b.items() if k != "labels"}
-                with torch.autocast(dev, enabled=dev == "cuda"):
+                with torch.autocast(dev, enabled=amp):
                     out.append(model(**b).logits.squeeze(-1).float().cpu())
         model.train()
         return torch.cat(out).numpy()
@@ -228,7 +230,7 @@ def run_transformer(df, res_dir, model_name, max_len, epochs, bs, lr):
     for ep in range(epochs):
         for b in dl_tr:
             b = {k: v.to(dev) for k, v in b.items()}
-            with torch.autocast(dev, enabled=dev == "cuda"):
+            with torch.autocast(dev, enabled=amp):
                 loss = torch.nn.functional.mse_loss(model(**{k: v for k, v in b.items() if k != "labels"}).logits.squeeze(-1).float(), b["labels"])
             opt.zero_grad(); scaler.scale(loss).backward(); scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -237,12 +239,16 @@ def run_transformer(df, res_dir, model_name, max_len, epochs, bs, lr):
             if step % eval_every == 0 or step == steps:
                 pv = predict(va)
                 vl = float(np.mean((np.clip(pv, 1, 6) - va.score.values) ** 2))
+                if not np.isfinite(pv).all():
+                    sys.exit("Validation predictions contain NaN/inf -- training diverged. Rerun without --fp16 or with a lower --lr.")
                 vq = float(qwk(va.score, to_int(pv)))
                 log.append(dict(step=step, epoch=step / len(dl_tr), train_loss=float(np.mean(run_loss)), val_mse=vl, val_qwk=vq))
                 run_loss = []
                 print(log[-1])
                 if vq > best:
                     best, best_state = vq, {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    if best_state is None:
+        sys.exit("No valid checkpoint was produced; see the log above.")
     model.load_state_dict(best_state)
     p = predict(te)
     label = f"{model_name.split('/')[-1]} (max {max_len} tok)"
@@ -357,6 +363,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--bs", type=int, default=8)
     ap.add_argument("--lr", type=float, default=3e-5)
+    ap.add_argument("--fp16", action="store_true", help="mixed precision (faster, can diverge with DeBERTa-v3)")
     a = ap.parse_args()
 
     res_dir, fig_dir = os.path.join(a.paper_dir, "results"), os.path.join(a.paper_dir, "figs")
@@ -366,7 +373,7 @@ def main():
     if a.stage in ("features", "all"):
         run_features(df, res_dir)
     if a.stage in ("transformer", "all"):
-        run_transformer(df, res_dir, a.model, a.max_len, a.epochs, a.bs, a.lr)
+        run_transformer(df, res_dir, a.model, a.max_len, a.epochs, a.bs, a.lr, a.fp16)
     report(df, res_dir, fig_dir)
 
 
